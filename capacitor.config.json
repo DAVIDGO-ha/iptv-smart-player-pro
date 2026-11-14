@@ -1,0 +1,20 @@
+{
+  "appId": "com.smartplayerpro.app",
+  "appName": "IPTV Smart Player PRO",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "http",
+    "cleartext": true
+  },
+  "android": {
+    "allowMixedContent": true,
+    "minWebViewVersion": 55,
+    "backgroundColor": "#0a0c2a"
+  },
+  "plugins": {
+    "CapacitorHttp": {
+      "enabled": true
+    }
+  },
+  "backgroundColor": "#0a0c2a"
+}

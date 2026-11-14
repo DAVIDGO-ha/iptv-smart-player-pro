@@ -1,0 +1,14 @@
+{
+  "appId": "com.smartplayerpro.app",
+  "productName": "IPTV Smart Player PRO",
+  "directories": { "output": "release" },
+  "files": ["dist/**", "platforms/electron/main.cjs", "platforms/electron/preload.cjs", "!node_modules/**"],
+  "extraMetadata": { "main": "platforms/electron/main.cjs", "type": "commonjs" },
+  "npmRebuild": false,
+  "compression": "maximum",
+  "extraResources": [{ "from": "platforms/electron/bin", "to": "bin" }],
+  "win": { "target": [{ "target": "nsis", "arch": ["x64"] }], "icon": "public/icons/icon-512.png", "artifactName": "IPTV-Smart-Player-PRO-Windows.${ext}" },
+  "nsis": { "oneClick": true, "perMachine": false, "createDesktopShortcut": true, "shortcutName": "IPTV Smart Player PRO" },
+  "mac": { "target": [{ "target": "dmg", "arch": ["x64", "arm64"] }], "icon": "public/icons/icon-512.png", "category": "public.app-category.video", "artifactName": "IPTV-Smart-Player-PRO-Mac-${arch}.${ext}", "identity": null },
+  "linux": { "target": [{ "target": "AppImage", "arch": ["x64"] }], "icon": "public/icons/icon-512.png", "category": "Video", "artifactName": "IPTV-Smart-Player-PRO-Linux.${ext}" }
+}

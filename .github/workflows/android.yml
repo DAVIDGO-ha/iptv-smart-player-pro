@@ -1,0 +1,235 @@
+name: Build IPTV Smart Player PRO (all devices)
+# Every push builds every version and publishes them to Releases › latest:
+#   IPTV-Smart-Player-PRO.apk                  Android phones, tablets, Android TV / Google TV (Sony, TCL, Philips, Hisense,
+#                                    Xiaomi, Nvidia Shield…), Firestick / Fire TV, Android TV boxes
+#   IPTV-Smart-Player-PRO-Windows.exe          Windows 7/10/11 (32 + 64-bit)
+#   IPTV-Smart-Player-PRO-Mac.dmg              macOS (Intel + Apple Silicon)
+#   IPTV-Smart-Player-PRO-Linux.AppImage       Linux
+#   IPTV-Smart-Player-PRO-LG-webOS.ipk         LG Smart TV (webOS)
+#   IPTV-Smart-Player-PRO-Samsung-Tizen.zip    Samsung Smart TV (open in Tizen Studio)
+#   IPTV-Smart-Player-PRO-Web.zip              Any other Smart TV / browser (host it on your website)
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: write
+
+concurrency:
+  group: build-all
+  cancel-in-progress: true
+
+env:
+  APP: .
+
+jobs:
+  web:
+    name: Web, LG & Samsung
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - name: Build web app
+        env:
+          SITE_URL: ${{ vars.SITE_URL }}
+        run: cd $APP && npm install && npm run build
+      - name: Samsung Tizen package folder
+        run: |
+          mkdir -p out tizen && cp -r $APP/dist/* tizen/ && cp $APP/platforms/tizen/config.xml tizen/
+          cd tizen && zip -qr ../out/IPTV-Smart-Player-PRO-Samsung-Tizen.zip .
+      - name: LG webOS .ipk
+        run: |
+          npm install -g @webos-tools/cli
+          mkdir -p webos && cp -r $APP/dist/* webos/ && cp $APP/platforms/webos/appinfo.json webos/
+          ares-package webos -o webos-out --no-minify
+          cp webos-out/*.ipk out/IPTV-Smart-Player-PRO-LG-webOS.ipk
+      - name: Web player zip
+        run: cd $APP/dist && zip -qr $GITHUB_WORKSPACE/out/IPTV-Smart-Player-PRO-Web.zip .
+      - uses: actions/upload-artifact@v4
+        with: { name: web, path: out/* }
+
+  android:
+    name: Android (phone, TV, Firestick)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 17 }
+      - name: Install
+        run: |
+          cd $APP
+          npm install
+          npm install @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6 @capacitor/app@6
+      - name: Build web
+        env:
+          SITE_URL: ${{ vars.SITE_URL }}
+        run: cd $APP && npm run build
+      - name: Android project
+        run: cd $APP && npx cap add android && npx cap sync android
+      - name: TV + Firestick + http streams
+        run: |
+          cd $APP
+          M=android/app/src/main/AndroidManifest.xml
+          sed -i 's|<application|<application android:usesCleartextTraffic="true" android:banner="@drawable/banner"|' $M
+          sed -i 's|<category android:name="android.intent.category.LAUNCHER" />|<category android:name="android.intent.category.LAUNCHER" />\n                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />|' $M
+          sed -i 's|<uses-permission android:name="android.permission.INTERNET" />|<uses-permission android:name="android.permission.INTERNET" />\n    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />\n    <uses-feature android:name="android.software.leanback" android:required="false" />\n    <uses-feature android:name="android.hardware.faketouch" android:required="false" />|' $M
+          # phone app opens in landscape, like IBO Player / IPTV Smarters
+          sed -i 's|android:name=".MainActivity"|android:name=".MainActivity" android:screenOrientation="sensorLandscape"|' $M
+          # Pro player (libVLC): plays Dolby AC3 / E-AC3 / DTS sound that the WebView can't
+          cp platforms/android/java/*.java android/app/src/main/java/com/smartplayerpro/app/
+          sed -i 's#</application>#    <activity android:name=".VlcActivity" android:theme="@style/AppTheme.NoActionBar" android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|navigation|uiMode" android:screenOrientation="sensorLandscape" android:exported="false" />\n    </application>#' $M
+          printf "\ndependencies {\n    implementation 'org.videolan.android:libvlc-all:3.6.0'\n}\nandroid {\n    defaultConfig {\n        ndk { abiFilters 'armeabi-v7a', 'arm64-v8a' }\n    }\n    packagingOptions {\n        jniLibs { useLegacyPackaging true }\n    }\n}\n" >> android/app/build.gradle
+          tail -15 android/app/build.gradle
+          mkdir -p android/app/src/main/res/drawable
+          cp platforms/android/banner.png android/app/src/main/res/drawable/banner.png
+          # app icon (rounded) for the phone / TV home screen
+          rm -rf android/app/src/main/res/mipmap-anydpi-v26 && cp -r platforms/android/res/. android/app/src/main/res/
+          cat $M
+      - name: Build APK
+        run: cd $APP/android && chmod +x gradlew && ./gradlew assembleDebug --no-daemon
+      - run: mkdir -p out && cp $APP/android/app/build/outputs/apk/debug/app-debug.apk out/IPTV-Smart-Player-PRO.apk
+      - uses: actions/upload-artifact@v4
+        with: { name: android, path: out/* }
+
+  play:
+    name: Google Play version (AAB)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 21 }
+      - name: Install (Capacitor 8 → Android 16 / API 36)
+        run: |
+          cd $APP
+          npm install
+          npm install @capacitor/core@8 @capacitor/cli@8 @capacitor/android@8 @capacitor/app@8
+      - name: Build web (Google Play version)
+        env:
+          SITE_URL: ${{ vars.SITE_URL }}
+          PLAY: '1'
+        run: cd $APP && npm run build
+      - name: Android project
+        run: cd $APP && npx cap add android && npx cap sync android
+      - name: TV + Firestick + http streams + Google Play Billing
+        run: |
+          cd $APP
+          M=android/app/src/main/AndroidManifest.xml
+          sed -i 's|<application|<application android:usesCleartextTraffic="true" android:banner="@drawable/banner"|' $M
+          sed -i 's|<category android:name="android.intent.category.LAUNCHER" />|<category android:name="android.intent.category.LAUNCHER" />\n                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />|' $M
+          sed -i 's|<uses-permission android:name="android.permission.INTERNET" />|<uses-permission android:name="android.permission.INTERNET" />\n    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />\n    <uses-feature android:name="android.software.leanback" android:required="false" />\n    <uses-feature android:name="android.hardware.faketouch" android:required="false" />|' $M
+          sed -i 's|android:name=".MainActivity"|android:name=".MainActivity" android:screenOrientation="sensorLandscape"|' $M
+          cp platforms/android/java/*.java platforms/android/play/*.java android/app/src/main/java/com/smartplayerpro/app/
+          sed -i 's#</application>#    <activity android:name=".VlcActivity" android:theme="@style/AppTheme.NoActionBar" android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|navigation|uiMode" android:screenOrientation="sensorLandscape" android:exported="false" />\n    </application>#' $M
+          V=$((1000 + ${{ github.run_number }}))
+          cat >> android/app/build.gradle <<GRADLE
+
+          dependencies {
+              implementation 'org.videolan.android:libvlc-all:3.6.5'
+              implementation 'com.android.billingclient:billing:8.0.0'
+          }
+          android {
+              defaultConfig {
+                  applicationId "com.smartplayerpro.tv"
+                  versionCode $V
+                  versionName "1.2.$V"
+                  ndk { abiFilters 'armeabi-v7a', 'arm64-v8a' }
+              }
+              signingConfigs {
+                  play {
+                      if (System.getenv("KS_FILE")) {
+                          storeFile file(System.getenv("KS_FILE"))
+                          storePassword System.getenv("KS_PASS")
+                          keyAlias System.getenv("KS_ALIAS")
+                          keyPassword System.getenv("KS_PASS")
+                      }
+                  }
+              }
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                      if (System.getenv("KS_FILE")) signingConfig signingConfigs.play
+                  }
+              }
+          }
+          GRADLE
+          tail -40 android/app/build.gradle
+          grep -n "targetSdk\|compileSdk\|minSdk" android/variables.gradle || true
+          mkdir -p android/app/src/main/res/drawable
+          cp platforms/android/banner.png android/app/src/main/res/drawable/banner.png
+          # app icon (rounded) for the phone / TV home screen
+          rm -rf android/app/src/main/res/mipmap-anydpi-v26 && cp -r platforms/android/res/. android/app/src/main/res/
+          cat $M
+      - name: Build signed AAB
+        env:
+          KS_B64: ${{ secrets.PLAY_KEYSTORE }}
+          KS_PASS: ${{ secrets.PLAY_KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.PLAY_KEY_ALIAS }}
+        run: |
+          cd $APP/android
+          if [ -n "$KS_B64" ]; then echo "$KS_B64" | base64 -d > $RUNNER_TEMP/upload.jks; export KS_FILE=$RUNNER_TEMP/upload.jks; else echo "::warning::No PLAY_KEYSTORE secret yet: the AAB is NOT signed (Play Console will refuse it)"; fi
+          chmod +x gradlew && ./gradlew bundleRelease --no-daemon
+          mkdir -p $GITHUB_WORKSPACE/out && cp app/build/outputs/bundle/release/app-release.aab $GITHUB_WORKSPACE/out/IPTV-Smart-Player-PRO-GooglePlay.aab
+      - name: Check 16 KB pages (required by Google Play)
+        run: |
+          cd $RUNNER_TEMP && rm -rf aab && mkdir aab && cd aab && unzip -q $GITHUB_WORKSPACE/out/IPTV-Smart-Player-PRO-GooglePlay.aab 'base/lib/arm64-v8a/*'
+          for f in base/lib/arm64-v8a/*.so; do echo "$(basename $f): $(readelf -lW $f | awk '/LOAD/{print $NF}' | sort -u | tr '\n' ' ')"; done
+      - uses: actions/upload-artifact@v4
+        with: { name: play, path: out/* }
+
+  desktop:
+    name: Desktop (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - name: Build
+        shell: bash
+        env:
+          SITE_URL: ${{ vars.SITE_URL }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd $APP
+          npm install
+          npm install --no-save electron@31 electron-builder@24
+          npm run build
+          mkdir -p platforms/electron/bin && touch platforms/electron/bin/.keep
+          FFU=https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0
+          if [ "$RUNNER_OS" = "Windows" ]; then curl -fsSL $FFU/ffmpeg-win32-x64.gz | gunzip > platforms/electron/bin/ffmpeg.exe || rm -f platforms/electron/bin/ffmpeg.exe; fi
+          if [ "$RUNNER_OS" = "Linux" ]; then (curl -fsSL $FFU/ffmpeg-linux-x64.gz | gunzip > platforms/electron/bin/ffmpeg && chmod +x platforms/electron/bin/ffmpeg) || rm -f platforms/electron/bin/ffmpeg; fi
+          ls -la platforms/electron/bin
+          npx electron-builder --config electron-builder.json --publish never
+          mkdir -p $GITHUB_WORKSPACE/out
+          cp release/IPTV-Smart-Player-PRO-* $GITHUB_WORKSPACE/out/ 2>/dev/null || true
+          rm -f $GITHUB_WORKSPACE/out/*.blockmap
+          ls -la $GITHUB_WORKSPACE/out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.os }}
+          path: out/*
+
+  release:
+    name: Publish to Releases › latest
+    needs: [web, android, play, desktop]
+    if: ${{ !cancelled() && needs.android.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: dist, merge-multiple: true }
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -la dist
+          gh release delete latest -y --cleanup-tag || true
+          gh release create latest dist/* -t "IPTV Smart Player PRO (all devices)" -n "Android phone/TV/Firestick: IPTV-Smart-Player-PRO.apk · Windows: IPTV-Smart-Player-PRO-Windows.exe · Mac: IPTV-Smart-Player-PRO-Mac.dmg · Linux: IPTV-Smart-Player-PRO-Linux.AppImage · LG TV: IPTV-Smart-Player-PRO-LG-webOS.ipk · Samsung TV: IPTV-Smart-Player-PRO-Samsung-Tizen.zip · Other TVs/browsers: IPTV-Smart-Player-PRO-Web.zip"

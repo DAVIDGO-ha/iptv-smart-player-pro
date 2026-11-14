@@ -1,0 +1,14 @@
+{
+  "id": "com.smartplayerpro.app",
+  "version": "1.0.0",
+  "vendor": "IPTV Smart Player PRO",
+  "type": "web",
+  "main": "index.html",
+  "title": "IPTV Smart Player PRO",
+  "icon": "icons/icon-192.png",
+  "largeIcon": "icons/icon-512.png",
+  "resolution": "1920x1080",
+  "disableBackHistoryAPI": true,
+  "bgColor": "#0a0c2a",
+  "splashBackground": "icons/icon-512.png"
+}

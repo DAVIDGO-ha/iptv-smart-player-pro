@@ -1,0 +1,101 @@
+name: Test Google Play build (Pro player + live streams)
+on:
+  workflow_dispatch:
+  push:
+    paths: ['.github/workflows/play-debug.yml']
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Get the Google Play app bundle → installable APK with WebView debugging on (test only)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download latest -R ${{ github.repository }} -p 'IPTV-Smart-Player-PRO-GooglePlay.aab' -D .
+          curl -sL -o bundletool.jar https://github.com/google/bundletool/releases/download/1.17.2/bundletool-all-1.17.2.jar
+          keytool -genkeypair -keystore dbg.jks -storepass android -keypass android -alias dbg -keyalg RSA -validity 1000 -dname "CN=dbg"
+          java -jar bundletool.jar build-apks --bundle=IPTV-Smart-Player-PRO-GooglePlay.aab --output=app.apks --mode=universal --ks=dbg.jks --ks-pass=pass:android --ks-key-alias=dbg --key-pass=pass:android
+          unzip -o app.apks universal.apk
+          python3 - <<'PY'
+          import zipfile, json
+          src = zipfile.ZipFile('universal.apk')
+          out = zipfile.ZipFile('mod.apk', 'w')
+          for it in src.infolist():
+              if it.filename.startswith('META-INF/'): continue
+              d = src.read(it.filename)
+              if it.filename == 'assets/capacitor.config.json':
+                  c = json.loads(d); c['android'] = {**c.get('android', {}), 'webContentsDebuggingEnabled': True}; d = json.dumps(c).encode()
+              out.writestr(it, d)
+          out.close()
+          PY
+          BT=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -1)
+          $BT/zipalign -f -p 4 mod.apk aligned.apk
+          $BT/apksigner sign --ks dbg.jks --ks-pass pass:android --key-pass pass:android --out test.apk aligned.apk
+          ls -la test.apk
+
+      - name: Write the test script
+        run: |
+          cat > cdp.mjs <<'JS'
+          const list = await (await fetch('http://127.0.0.1:9222/json')).json()
+          const page = list.find((p) => p.type === 'page') || list[0]
+          const ws = new WebSocket(page.webSocketDebuggerUrl)
+          await new Promise((r) => (ws.onopen = r))
+          let id = 0
+          const ev = (expr) => new Promise((res) => {
+            const my = ++id
+            ws.addEventListener('message', function f(m) { const d = JSON.parse(m.data); if (d.id === my) { ws.removeEventListener('message', f); res(d.result) } })
+            ws.send(JSON.stringify({ id: my, method: 'Runtime.evaluate', params: { expression: expr, awaitPromise: false, returnByValue: true } }))
+          })
+          const what = process.argv[2]
+          const url = 'https://devstreaming-cdn.apple.com/videos/streaming/examples/bipbop_4x3/bipbop_4x3_variant.m3u8'
+          let args
+          if (what === 'movie') args = { url, title: 'Movie test', start: 0, live: false, ua: 'IPTVSmartPlayerPRO/1.0', urls: [], titles: [], index: 0 }
+          if (what === 'small') args = { url, title: 'Live small list', start: 0, live: true, ua: 'IPTVSmartPlayerPRO/1.0', urls: Array(150).fill(url), titles: Array(150).fill('Channel'), index: 3 }
+          if (what === 'big') args = { url, title: 'Live big list', start: 0, live: true, ua: 'IPTVSmartPlayerPRO/1.0', urls: Array(6000).fill(url + '?ch=1234567890'), titles: Array(6000).fill('UK: SKY SPORTS MAIN EVENT FHD'), index: 3 }
+          console.log(JSON.stringify(await ev(`typeof Capacitor + ' ' + (Capacitor.isNativePlatform && Capacitor.isNativePlatform())`)))
+          console.log(JSON.stringify(await ev(`Capacitor.nativePromise('VlcPlayer','play',${JSON.stringify(args)}).then(r=>console.log('RESULT',JSON.stringify(r))).catch(e=>console.log('ERR',e.message)); 'sent'`)))
+          ws.close()
+          JS
+          cat > run.sh <<'SH'
+          set -x
+          adb install -r test.apk
+          adb shell monkey -p com.smartplayerpro.tv -c android.intent.category.LAUNCHER 1
+          sleep 20
+          for t in movie small big; do
+            adb shell am force-stop com.smartplayerpro.tv
+            adb shell monkey -p com.smartplayerpro.tv -c android.intent.category.LAUNCHER 1
+            sleep 15
+            P=$(adb shell pidof com.smartplayerpro.tv | tr -d '\r')
+            adb forward --remove-all
+            adb forward tcp:9222 localabstract:webview_devtools_remote_$P
+            adb logcat -c
+            node cdp.mjs $t
+            sleep 12
+            adb shell input keyevent KEYCODE_HOME
+            sleep 4
+            echo "===== $t : process now: $(adb shell pidof com.smartplayerpro.tv || echo GONE)"
+            adb logcat -d -b crash | head -60
+            adb logcat -d | grep -iE "FATAL|AndroidRuntime|TransactionTooLarge|Exception|VlcActivity|chromium.*RESULT|chromium.*ERR" | grep -v "monkey" | tail -40
+          done
+          SH
+          chmod +x run.sh
+
+      - name: Run on an Android 14 emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          script: ./run.sh
