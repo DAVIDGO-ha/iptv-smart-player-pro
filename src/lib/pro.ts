@@ -4,7 +4,27 @@ import { UA } from './flavor'
 
 const W = window as any
 
+// While the Pro player is open, the small player stops its stream (one connection per line:
+// a second stream makes the provider cut both).
+let proOpen = false
+const proSubs = new Set<(v: boolean) => void>()
+const setProOpen = (v: boolean) => {
+  proOpen = v
+  proSubs.forEach((f) => f(v))
+}
+export const isProOpen = () => proOpen
+export const onProOpen = (f: (v: boolean) => void) => (proSubs.add(f), () => void proSubs.delete(f))
+
 export const hasNativePro = () => !!W.Capacitor?.isNativePlatform?.()
+const setting = (k: string, d: string): string => {
+  try {
+    return JSON.parse(localStorage.getItem('ip.settings') || '{}')[k] || d
+  } catch {
+    return d
+  }
+}
+/** Android app: the native engine chosen in Settings › Video engine (VLC by default). */
+export const nativeEngine = (): 'vlc' | 'exo' => (setting('nativeEngine', 'vlc') === 'exo' ? 'exo' : 'vlc')
 export const hasDesktopPro = () => !!W.desktop?.openVlc
 export const canPro = () => hasNativePro() || hasDesktopPro()
 
@@ -41,8 +61,34 @@ export function proFor(kind: string, url: string): boolean {
     e = JSON.parse(localStorage.getItem('ip.settings') || '{}').engine || 'auto'
   } catch {}
   if (e === 'builtin') return false
-  return proPreferred() || kind === 'episode' || /\.(mkv|avi)(\?|$)/i.test(url)
+  // Android app (phone, tablet, TV): Live TV, movies and series all play in the native player (VLC or ExoPlayer) —
+  // one steady connection that reconnects by itself, like Hot Player / IBO Player. "Built-in" in Settings turns it off.
+  return true
 }
+
+// ——— Small VLC player inside the app screen (Android app): the channel plays next to the list, like Hot Player ———
+const vlc = (m: string, a: any = {}): Promise<any> => {
+  const C = W.Capacitor
+  try {
+    return Promise.resolve(C?.nativePromise ? C.nativePromise('VlcPlayer', m, a) : C?.Plugins?.VlcPlayer?.[m]?.(a))
+  } catch (e) {
+    return Promise.reject(e)
+  }
+}
+/** Android app, unless "Built-in" is chosen in Settings › Player engine. */
+export function embedOk(): boolean {
+  if (!hasNativePro()) return false
+  try {
+    return (JSON.parse(localStorage.getItem('ip.settings') || '{}').engine || 'auto') !== 'builtin'
+  } catch {
+    return true
+  }
+}
+export type Box = { x: number; y: number; w: number; h: number } // fractions (0–1) of the page
+export const embedPlay = (url: string, live: boolean, box: Box) => vlc('embedPlay', { url, live, ua: UA, engine: nativeEngine(), ...box })
+export const embedRect = (box: Box) => vlc('embedRect', box).catch(() => {})
+export const embedStop = () => vlc('embedStop').catch(() => {})
+export const embedState = (): Promise<{ state?: string; video?: boolean } | undefined> => vlc('embedState').catch(() => undefined)
 
 /** Android app (phone or TV): formats that never have sound / picture in the built-in player go straight to the Pro player.
  *  Everything else may play inside the dashboard first (the right-hand screen), like Live TV. */
@@ -53,7 +99,7 @@ export function mustPro(kind: string, url: string): boolean {
     e = JSON.parse(localStorage.getItem('ip.settings') || '{}').engine || 'auto'
   } catch {}
   if (e === 'builtin') return false
-  return kind === 'episode' || /\.(mkv|avi)(\?|$)/i.test(url)
+  return true // movies and episodes open full screen in the native player (seek bar, sound tracks, subtitles)
 }
 
 /** Plays the stream in the Pro player. Resolves with the position (seconds) when the user comes back, or null. */
@@ -79,8 +125,14 @@ export async function playPro(o: {
       titles = titles.slice(from, from + 201)
       index -= from
     }
-    const args = { url: o.url, title: o.title || '', start: o.start || 0, live: !!o.live, ua: UA, urls, titles, index }
-    const r = C.nativePromise ? await C.nativePromise('VlcPlayer', 'play', args) : await C.Plugins?.VlcPlayer?.play(args)
+    const args = { url: o.url, title: o.title || '', start: o.start || 0, live: !!o.live, ua: UA, urls, titles, index, engine: nativeEngine() }
+    setProOpen(true)
+    let r: any
+    try {
+      r = C.nativePromise ? await C.nativePromise('VlcPlayer', 'play', args) : await C.Plugins?.VlcPlayer?.play(args)
+    } finally {
+      setProOpen(false)
+    }
     return r ? { pos: Number(r.pos) || 0, dur: Number(r.dur) || 0, index: (Number(r.index) || 0) + (urls.length < (o.urls || []).length ? from : 0) } : null
   }
   if (hasDesktopPro()) {

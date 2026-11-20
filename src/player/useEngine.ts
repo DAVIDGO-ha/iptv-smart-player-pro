@@ -1,9 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
 import { attachEngine, detectType, type Engine } from '../lib/engines'
 import { attachTranscode, canTranscode, needsTranscode, probe } from '../lib/transcode'
+import { isProOpen, onProOpen } from '../lib/pro'
+import { dropRoute, unrouted } from '../lib/net'
 
 // Attach the right engine to a <video>, with automatic fallback between formats.
-export function useEngine(videoRef: React.RefObject<HTMLVideoElement>, url: string | undefined, live: boolean) {
+export function useEngine(videoRef: React.RefObject<HTMLVideoElement>, wantUrl: string | undefined, live: boolean) {
+  // Pro player open → this player lets go of the stream (the line has one connection), and resumes after
+  const [proOn, setProOn] = useState(isProOpen())
+  useEffect(() => onProOpen(setProOn), [])
+  const url = proOn ? undefined : wantUrl
   const [error, setError] = useState('')
   const [engine, setEngine] = useState<Engine | null>(null)
   const [tracksTick, setTick] = useState(0)
@@ -29,7 +35,7 @@ export function useEngine(videoRef: React.RefObject<HTMLVideoElement>, url: stri
       if (A.n >= (A.played ? 6 : 1)) return false
       A.n++
       clearTimeout(again)
-      again = setTimeout(() => !dead && setAttempt((a) => a + 1), Math.min(1000 * A.n, 4000))
+      again = setTimeout(() => !dead && setAttempt((a) => a + 1), Math.min(1500 + 1500 * A.n, 8000)) // let the server free the connection first
       return true
     }
     setError('')
@@ -82,11 +88,18 @@ export function useEngine(videoRef: React.RefObject<HTMLVideoElement>, url: stri
     }, 2500)
     const first = detectType(url, live ? 'live' : undefined)
     // Fallback order per first guess
-    const order: { u: string; t: 'hls' | 'ts' | 'native' }[] = [{ u: url, t: first }]
+    const order: { u: string; t: 'hls' | 'ts' | 'native'; plain?: boolean }[] = [{ u: url, t: first }]
     if (live && /\.ts(\?|$)/.test(url)) order.push({ u: url.replace(/\.ts(\?|$)/, '.m3u8$1'), t: 'hls' })
     if (live && /\.m3u8(\?|$)/.test(url)) order.push({ u: url.replace(/\.m3u8(\?|$)/, '.ts$1'), t: 'ts' })
     if (first === 'native') order.push({ u: url, t: 'hls' })
     if (first !== 'native') order.push({ u: url, t: 'native' })
+    // The link was switched to the server's address (anti-block) and does not play → last try with the server's own
+    // name: a proxy / shared server only answers to its name. If that plays, the switch is removed for this server.
+    const plain = unrouted(url)
+    if (plain) order.push({ u: plain, t: first, plain: true })
+    let curPlain = false
+    const onPlaying = () => curPlain && dropRoute(plain)
+    v.addEventListener('playing', onPlaying)
 
     let step = 0
     const tryNext = async (why?: string) => {
@@ -99,6 +112,11 @@ export function useEngine(videoRef: React.RefObject<HTMLVideoElement>, url: stri
         setError(why || 'This stream could not be played.')
         return
       }
+      // Not the first try: the server needs a moment to free the line's connection (one connection per line —
+      // a new try straight away is refused, and the stream looks "stopped")
+      if (step > 1) await new Promise((r) => setTimeout(r, 1500))
+      if (dead) return
+      curPlain = !!o.plain
       try {
         const e = await attachEngine(v, o.u, {
           live,
@@ -151,6 +169,7 @@ export function useEngine(videoRef: React.RefObject<HTMLVideoElement>, url: stri
       if (watchdog) clearInterval(watchdog)
       clearTimeout(again)
       v.removeEventListener('error', onErr)
+      v.removeEventListener('playing', onPlaying)
       v.removeEventListener('loadedmetadata', onMeta)
       engRef.current?.destroy()
       engRef.current = null
