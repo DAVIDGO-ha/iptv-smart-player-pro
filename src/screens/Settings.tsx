@@ -11,6 +11,7 @@ import { loadEpg } from '../lib/epg'
 import type { Kind } from '../lib/types'
 import { canPro, hasNativePro } from '../lib/pro'
 import { LANGS } from '../lib/i18n'
+import { BgPicker } from './BgPicker'
 
 const ACCENTS = ['#7C5CFF', '#0A84FF', '#5E5CE6', '#BF5AF2', '#FF375F', '#FF9F0A', '#30D158', '#FFFFFF']
 export const VERSION = '1.0.0'
@@ -204,6 +205,8 @@ export function Settings() {
             ))}
           </div>
         </Row>
+        <Row icon="tv" label="Background" sub="Picture or colour behind the app" />
+        <BgPicker defaultStyle={{ background: 'radial-gradient(120px 70px at 85% -10%, rgba(124, 92, 255, 0.5), transparent 70%), radial-gradient(90px 60px at -10% 110%, rgba(10, 132, 255, 0.35), transparent 70%), #0b0a1c' }} />
         <Row icon="timer" label="Time format">
           <Segmented value={s.timeFormat} onChange={(v) => set({ timeFormat: v })} options={[{ v: '24', l: '24-hour' }, { v: '12', l: '12-hour' }]} />
         </Row>
