@@ -5,6 +5,7 @@ import { App } from './App'
 import { initSpatialNav } from './ui'
 import './styles.css'
 import { initDeviceId } from './lib/settings'
+import { initBackground } from './lib/bgpick'
 import { initI18n } from './lib/i18n'
 import { refreshRoutes } from './lib/net'
 
@@ -55,6 +56,7 @@ Promise.race([initDeviceId(), new Promise((r) => setTimeout(r, 1500))]).finally(
   )
 )
 initI18n() // French / German / Spanish interface
+initBackground() // Settings › Background: picture or colour
 refreshRoutes().catch(() => {}) // keep anti-block addresses up to date
 
 
